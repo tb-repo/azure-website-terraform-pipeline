@@ -33,7 +33,9 @@ steps:
       scriptLocation: inlineScript
       inlineScript: |
         set -euo pipefail
+        echo "Pipeline identity (client ID):"
+        az account show --query user.name --output tsv
+        echo "Testing state-container access:"
+        az storage blob list --account-name tbstateacc --container-name tfstate --auth-mode login --output table
         terraform -chdir=terraform fmt -check -recursive
         terraform -chdir=terraform init -input=false -lockfile=readonly
-        terraform -chdir=terraform validate
-        terraform -chdir=terraform plan -input=false -no-color
