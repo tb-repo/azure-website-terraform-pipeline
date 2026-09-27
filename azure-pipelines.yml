@@ -1,0 +1,39 @@
+trigger:
+  branches:
+    include:
+      - main
+
+pool:
+  vmImage: ubuntu-latest
+
+steps:
+  - checkout: self
+
+  - task: Bash@3
+    displayName: Install Terraform
+    inputs:
+      targetType: inline
+      script: |
+        set -euo pipefail
+        version="1.14.4"
+        install_dir="$(Agent.TempDirectory)/terraform"
+        mkdir -p "$install_dir"
+        cd "$install_dir"
+        curl -fsSLO "https://releases.hashicorp.com/terraform/${version}/terraform_${version}_linux_amd64.zip"
+        curl -fsSLO "https://releases.hashicorp.com/terraform/${version}/terraform_${version}_SHA256SUMS"
+        grep "terraform_${version}_linux_amd64.zip$" "terraform_${version}_SHA256SUMS" | sha256sum --check
+        unzip -o "terraform_${version}_linux_amd64.zip" -d "$install_dir"
+        echo "##vso[task.prependpath]$install_dir"
+
+  - task: AzureCLI@2
+    displayName: Terraform checks and plan
+    inputs:
+      azureSubscription: sc-azure-terraform-lab
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        set -euo pipefail
+        terraform -chdir=terraform fmt -check -recursive
+        terraform -chdir=terraform init -input=false -lockfile=readonly
+        terraform -chdir=terraform validate
+        terraform -chdir=terraform plan -input=false -no-color
