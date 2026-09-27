@@ -19,7 +19,7 @@ resource "azurerm_linux_virtual_machine" "web" {
   name                            = "tb-vm-web"
   location                        = data.azurerm_resource_group.lab.location
   resource_group_name             = data.azurerm_resource_group.lab.name
-  size                            = "Standard_B1s"
+  size                            = "Standard_B21s_v2"
   admin_username                  = "azureuser"
   disable_password_authentication = true
   network_interface_ids           = [azurerm_network_interface.web.id]
