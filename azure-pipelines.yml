@@ -6,36 +6,106 @@ trigger:
 pool:
   vmImage: ubuntu-latest
 
-steps:
-  - checkout: self
+stages:
+  - stage: Plan
+    displayName: Validate and plan
+    jobs:
+      - job: TerraformPlan
+        displayName: Terraform validation and plan
+        steps:
+          - checkout: self
 
-  - task: Bash@3
-    displayName: Install Terraform
-    inputs:
-      targetType: inline
-      script: |
-        set -euo pipefail
-        version="1.14.4"
-        install_dir="$(Agent.TempDirectory)/terraform"
-        mkdir -p "$install_dir"
-        cd "$install_dir"
-        curl -fsSLO "https://releases.hashicorp.com/terraform/${version}/terraform_${version}_linux_amd64.zip"
-        curl -fsSLO "https://releases.hashicorp.com/terraform/${version}/terraform_${version}_SHA256SUMS"
-        grep "terraform_${version}_linux_amd64.zip$" "terraform_${version}_SHA256SUMS" | sha256sum --check
-        unzip -o "terraform_${version}_linux_amd64.zip" -d "$install_dir"
-        echo "##vso[task.prependpath]$install_dir"
+          - task: Bash@3
+            displayName: Install Terraform
+            inputs:
+              targetType: inline
+              script: |
+                set -euo pipefail
+                version="1.14.4"
+                install_dir="$(Agent.TempDirectory)/terraform"
+                mkdir -p "$install_dir"
+                cd "$install_dir"
+                curl -fsSLO "https://releases.hashicorp.com/terraform/${version}/terraform_${version}_linux_amd64.zip"
+                curl -fsSLO "https://releases.hashicorp.com/terraform/${version}/terraform_${version}_SHA256SUMS"
+                grep "terraform_${version}_linux_amd64.zip$" "terraform_${version}_SHA256SUMS" | sha256sum --check
+                unzip -o "terraform_${version}_linux_amd64.zip" -d "$install_dir"
+                echo "##vso[task.prependpath]$install_dir"
 
-  - task: AzureCLI@2
-    displayName: Terraform checks and plan
-    inputs:
-      azureSubscription: sc-azure-terraform-lab
-      scriptType: bash
-      scriptLocation: inlineScript
-      inlineScript: |
-        set -euo pipefail
-        echo "Pipeline identity (client ID):"
-        az account show --query user.name --output tsv
-        echo "Testing state-container access:"
-        az storage blob list --account-name tbstateacc --container-name tfstate --auth-mode login --output table
-        terraform -chdir=terraform fmt -check -recursive
-        terraform -chdir=terraform init -input=false -lockfile=readonly
+          - task: AzureCLI@2
+            displayName: Validate and create saved plan
+            inputs:
+              azureSubscription: sc-azure-terraform-lab
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+                terraform -chdir=terraform fmt -check -recursive
+                terraform -chdir=terraform init -input=false -lockfile=readonly
+                terraform -chdir=terraform validate
+
+                plan_dir="$(Build.ArtifactStagingDirectory)/terraform-plan"
+                mkdir -p "$plan_dir"
+                terraform -chdir=terraform plan -input=false -out="$plan_dir/tfplan"
+                terraform -chdir=terraform show -no-color "$plan_dir/tfplan"
+
+          - task: PublishPipelineArtifact@1
+            displayName: Publish Terraform plan
+            inputs:
+              targetPath: '$(Build.ArtifactStagingDirectory)/terraform-plan'
+              artifact: terraform-plan
+
+  - stage: Review
+    displayName: Review Terraform plan
+    dependsOn: Plan
+    jobs:
+      - job: ManualReview
+        displayName: Wait for approval
+        pool: server
+        timeoutInMinutes: 40
+        steps:
+          - task: ManualValidation@0
+            timeoutInMinutes: 30
+            inputs:
+              notifyUsers: 'thiagarajanb@gmail.com'
+              instructions: 'Review the Terraform plan in the Plan stage logs. Resume to approve deployment, or reject to stop.'
+              onTimeout: reject
+
+  - stage: Apply
+    displayName: Apply approved Terraform plan
+    dependsOn: Review
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - job: TerraformApply
+        displayName: Apply saved plan
+        steps:
+          - checkout: self
+
+          - download: current
+            artifact: terraform-plan
+
+          - task: Bash@3
+            displayName: Install Terraform
+            inputs:
+              targetType: inline
+              script: |
+                set -euo pipefail
+                version="1.14.4"
+                install_dir="$(Agent.TempDirectory)/terraform"
+                mkdir -p "$install_dir"
+                cd "$install_dir"
+                curl -fsSLO "https://releases.hashicorp.com/terraform/${version}/terraform_${version}_linux_amd64.zip"
+                curl -fsSLO "https://releases.hashicorp.com/terraform/${version}/terraform_${version}_SHA256SUMS"
+                grep "terraform_${version}_linux_amd64.zip$" "terraform_${version}_SHA256SUMS" | sha256sum --check
+                unzip -o "terraform_${version}_linux_amd64.zip" -d "$install_dir"
+                echo "##vso[task.prependpath]$install_dir"
+
+          - task: AzureCLI@2
+            displayName: Apply reviewed plan
+            inputs:
+              azureSubscription: sc-azure-terraform-lab
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+                terraform -chdir=terraform init -input=false -lockfile=readonly
+                terraform -chdir=terraform apply -input=false "$(Pipeline.Workspace)/terraform-plan/tfplan"
